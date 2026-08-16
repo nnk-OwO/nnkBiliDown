@@ -193,9 +193,9 @@ python start.py --host 127.0.0.1 --port 7860 --no-browser
 ```text
 https://www.bilibili.com/video/BV1GJ411x7h7
 https://b23.tv/xxxx
-https://www.bilibili.com/bangumi/play/ep407471
+https://www.bilibili.com/bangumi/play/ep277026
 https://www.bilibili.com/bangumi/play/ss39431
-https://space.bilibili.com/486906719/video
+https://space.bilibili.com/23248035/video
 ```
 
 ### 2. 选择
