@@ -1,0 +1,48 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  color-scheme: light;
+}
+.dark {
+  color-scheme: dark;
+}
+html, body, #root {
+  min-height: 100%;
+}
+body {
+  font-family: "Inter", "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+.bg-app {
+  background-color: #f6f7fb;
+  background-image: radial-gradient(1200px 500px at 15% -10%, rgba(251,114,153,0.10), transparent 60%),
+    radial-gradient(900px 400px at 95% 0%, rgba(0,161,214,0.08), transparent 55%);
+}
+.dark .bg-app {
+  background-color: #0b1120;
+  background-image: radial-gradient(1200px 500px at 15% -10%, rgba(251,114,153,0.08), transparent 60%),
+    radial-gradient(900px 400px at 95% 0%, rgba(0,161,214,0.06), transparent 55%);
+}
+.progress-fill {
+  transition: width 0.35s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.card {
+  border-radius: 1rem;
+  border: 1px solid rgb(0 0 0 / 0.06);
+  background: rgb(255 255 255 / 0.86);
+  box-shadow: 0 8px 24px -12px rgb(15 23 42 / 0.10);
+  backdrop-filter: blur(8px);
+}
+.dark .card {
+  border-color: rgb(255 255 255 / 0.08);
+  background: rgb(15 23 42 / 0.82);
+  box-shadow: 0 10px 28px -14px rgb(0 0 0 / 0.55);
+}
+input, textarea, select {
+  outline: none;
+}
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-thumb { border-radius: 8px; background: rgb(148 163 184 / 0.4); }
+::-webkit-scrollbar-track { background: transparent; }
