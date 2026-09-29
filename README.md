@@ -17,6 +17,35 @@ FastAPI · yt-dlp · ffmpeg · React · Vite · Tailwind CSS
 
 nnkBiliDown 在本地启动一个 Web 服务，通过浏览器即可解析并下载 B 站视频。支持 Cookie / 扫码登录、清晰度与编码选择、多分P和批量队列、实时进度、历史记录以及自动整理文件。
 
+---
+
+## 🖱️ 免安装客户端（推荐给普通用户）
+
+不想折腾 Python 环境的话，直接下载打包好的客户端，**解压即用**：
+已内置 Python 运行时与 ffmpeg，无需安装 Python / Node.js / ffmpeg。
+
+| 系统 | 文件 | 使用方式 |
+| --- | --- | --- |
+| Windows 10/11 x64 | `nnkBiliDown-Windows-x64.zip` | 解压后双击 `nnkBiliDown.exe` |
+| macOS Apple Silicon | `nnkBiliDown-macOS-arm64.zip` | 解压后双击 `nnkBiliDown.app` |
+| macOS Intel | `nnkBiliDown-macOS-x64.zip` | 同上 |
+| Linux x64 | `nnkBiliDown-Linux-x64.tar.gz` | `tar -xzf` 后运行 `./nnkBiliDown` |
+
+从 [Releases](https://github.com/nnk-OwO/nnkBiliDown/releases) 下载即可。打包后的客户端会：
+
+1. 自动选一个空闲端口启动本地服务
+2. 弹出一个**独立应用窗口**（无地址栏/标签页，外观与桌面客户端一致）
+3. 关闭窗口后服务仍在后台运行，不会打断正在进行的下载
+
+> macOS 版本未做代码签名，首次打开请**右键 → 打开**，或执行
+> `xattr -dr com.apple.quarantine nnkBiliDown.app`。
+>
+> Linux 需要一个 Chromium 内核浏览器来开窗口：`sudo apt install chromium`。
+
+需要自己构建客户端，或想了解签名、体积、内置依赖等细节，见 **[PACKAGING.md](./PACKAGING.md)**。
+
+---
+
 > ℹ️ **非官方声明**：本项目与哔哩哔哩（Bilibili）无任何关联，是非官方社区工具。项目名称中的 “Bili” 仅用于说明软件用途，不表示任何官方认证或授权。
 >
 > ⚠️ **免责声明**：本项目仅供个人学习、研究使用。请遵守相关法律法规与 Bilibili 服务条款，不要下载或传播未授权内容。
@@ -121,7 +150,13 @@ sudo apt update && sudo apt install ffmpeg
 
 ## 🚀 快速开始
 
-### Windows
+### 方式一：免安装客户端
+
+见上方「免安装客户端」小节，下载对应系统压缩包解压即用。
+
+### 方式二：源码运行
+
+#### Windows
 
 双击或在终端运行：
 
@@ -129,7 +164,7 @@ sudo apt update && sudo apt install ffmpeg
 scripts\start.bat
 ```
 
-### macOS / Linux
+#### macOS / Linux
 
 ```bash
 chmod +x scripts/start.sh
@@ -158,6 +193,19 @@ python start.py --port 7860
 ```bash
 python start.py --host 127.0.0.1 --port 7860 --no-browser
 ```
+
+### 方式三：源码模式 + 应用窗口
+
+想在不打包的情况下获得"独立应用窗口"体验，可以直接运行客户端入口：
+
+```bash
+python desktop.py                 # 应用窗口（自动挑选 Edge / Chrome / Chromium）
+python desktop.py --no-window      # 等同旧版：起服务 + 打开浏览器
+python desktop.py --port 7861     # 指定端口
+python desktop.py --window-mode chrome
+```
+
+客户端入口的完整参数与环境变量说明见 **[PACKAGING.md](./PACKAGING.md#5-客户端运行行为)**。
 
 ---
 
@@ -311,19 +359,27 @@ nnkBiliDown/
 │   ├── bilibili.py        B 站 API 客户端、WBI 签名、视频解析
 │   ├── downloader.py      下载队列、yt-dlp 封装、进度钩子
 │   ├── config.py          配置/历史存储、跨平台下载目录定位
+│   ├── runtime.py         打包/源码两种模式下的资源与 ffmpeg 定位
 │   ├── qr_login.py        扫码登录
 │   └── models.py          Pydantic 请求模型
 ├── frontend/
 │   ├── src/               React + Tailwind 源码
 │   └── dist/              已构建的生产前端（无需 Node）
+├── packaging/
+│   ├── build.py           一键打包脚本（三平台通用）
+│   ├── nnkBiliDown.spec   PyInstaller 配置
+│   ├── fetch_ffmpeg.py    下载并内置 ffmpeg
+│   └── make_icon.py       生成应用图标
+├── .github/workflows/
+│   └── build-clients.yml  GitHub Actions 三平台自动打包
 ├── scripts/
 │   ├── start.bat          Windows 一键启动
 │   ├── start.sh           macOS / Linux 一键启动
 │   └── dev.sh             前后端开发模式
+├── desktop.py             客户端入口（应用窗口 + 服务）
 ├── start.py               Python 跨平台启动器
 ├── requirements.txt
-├── .gitignore
-├── .gitattributes
+├── PACKAGING.md           客户端打包文档
 ├── LICENSE                MIT License
 └── README.md
 ```
@@ -402,6 +458,39 @@ nnkBiliDown 默认使用操作系统真实的“下载”文件夹：
 ```bash
 python start.py --port 7861
 ```
+
+### 9. 客户端双击后没有出现窗口
+
+客户端会用 Chromium 内核浏览器（Windows: Edge/Chrome，Linux: Chromium）的 `--app`
+模式开窗口。如果窗口没出现：
+
+1. 服务本身通常已经起来了，手动访问 **http://localhost:7860** 试试
+2. 查看日志：`~/.nnkbilidown/nnkbilidown.log`
+3. 强制用系统浏览器打开：
+
+   ```bash
+   # Windows
+   nnkBiliDown.exe --window-mode browser
+   # macOS / Linux
+   ./nnkBiliDown --window-mode browser
+   ```
+
+4. Linux 上安装 Chromium：`sudo apt install chromium`
+
+### 10. 关闭客户端窗口后，程序还在后台
+
+这是有意设计：避免关闭窗口时打断正在进行的下载。
+退出方式：Windows 在任务管理器结束 `nnkBiliDown.exe`；macOS/Linux 在终端 `Ctrl+C`
+或结束进程。希望关窗即退出可以启动时加 `--quit-with-window`。
+
+### 11. 客户端里的 ffmpeg
+
+打包客户端**已内置 ffmpeg**，无需另装。可以在「设置」或 `/api/health` 里看到来源：
+
+- `bundled` 内置（正常）
+- `env` 由 `NNKBILIDOWN_FFMPEG` 指定
+- `system` 回退到系统 PATH（说明内置缺失，重新下载完整安装包即可）
+
 
 ---
 

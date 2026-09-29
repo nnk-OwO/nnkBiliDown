@@ -7,3 +7,17 @@ Thumbs.db
 .nnkbilidown/
 .bili_downloader/
 *.log
+
+# 打包相关
+build/
+dist/
+tools/ffmpeg/
+assets/icon.ico
+assets/icon.icns
+frontend/_node_modules_packaging_stash/
+
+# 本地打包用的虚拟环境
+.build-venv/
+.build-libs/
+.build-wheels/
+.build-tmp/

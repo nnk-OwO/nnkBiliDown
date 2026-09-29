@@ -1,0 +1,146 @@
+name: Build Desktop Clients
+
+# 三种系统分别用各自的原生 runner 打包：
+# PyInstaller 不能交叉编译，Windows/Mac/Linux 的客户端必须在对应系统上构建。
+#
+# 触发方式：
+#   1. 打标签： git tag v1.0.0 && git push origin v1.0.0   → 产出 Release
+#   2. 手动：   Actions 页面点 "Run workflow"               → 产出 Artifacts
+on:
+  workflow_dispatch:
+    inputs:
+      upload_release:
+        description: "如果当前是 tag 触发，是否创建 Release"
+        type: boolean
+        default: true
+  push:
+    tags:
+      - "v*"
+    branches:
+      - main
+    paths:
+      - "backend/**"
+      - "frontend/**"
+      - "packaging/**"
+      - "desktop.py"
+      - "requirements.txt"
+      - ".github/workflows/build-clients.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+
+    strategy:
+      fail-fast: false          # 一个平台失败不影响其它平台出包
+      matrix:
+        include:
+          - os: windows-latest
+            label: Windows x64
+            artifact: nnkBiliDown-Windows-x64
+          - os: macos-13           # Intel
+            label: macOS x64
+            artifact: nnkBiliDown-macOS-x64
+          - os: macos-14           # Apple Silicon (M 系列)
+            label: macOS arm64
+            artifact: nnkBiliDown-macOS-arm64
+          - os: ubuntu-22.04       # glibc 2.35 基线，兼容较广
+            label: Linux x64
+            artifact: nnkBiliDown-Linux-x64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # pywebview 在 Linux 上依赖 GTK + WebKit2GTK
+      - name: 安装 Linux 图形依赖
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            python3-gi python3-gi-cairo gir1.2-gtk-3.0 gir1.2-webkit2-4.1 \
+            libgtk-3-0 libwebkit2gtk-4.1-0 libgirepository1.0-dev \
+            patchelf
+
+      - name: 升级 pip
+        run: python -m pip install --upgrade pip wheel setuptools
+
+      - name: 安装运行依赖
+        run: python -m pip install -r requirements.txt
+
+      # Linux 的 ffmpeg 构建需要匹配 CI 的 glibc；BtbN 的 linux64 静态构建可满足
+      - name: 下载并内置 ffmpeg
+        run: python packaging/fetch_ffmpeg.py
+
+      - name: 检查内置 ffmpeg
+        run: python packaging/fetch_ffmpeg.py --check
+
+      # macOS 的 .icns 由 build.py 用系统 sips/iconutil 自动生成
+      - name: 打包客户端
+        run: python packaging/build.py --build-frontend --ci
+
+      - name: 列出产物
+        shell: bash
+        run: ls -lh dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            dist/*.zip
+            dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: 发布 Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: 汇总文件
+        run: |
+          mkdir -p release
+          find artifacts -type f \( -name '*.zip' -o -name '*.tar.gz' \) -exec cp {} release/ \;
+          ls -lh release/
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: release/*
+          generate_release_notes: true
+          body: |
+            ## nnkBiliDown 桌面客户端
+
+            解压即用，已内置 ffmpeg，无需安装 Python / Node / ffmpeg。
+
+            | 系统 | 文件 | 使用方式 |
+            | --- | --- | --- |
+            | Windows 10/11 x64 | `nnkBiliDown-Windows-x64.zip` | 解压后双击 `nnkBiliDown.exe` |
+            | macOS Apple Silicon | `nnkBiliDown-macOS-arm64.zip` | 解压后双击 `nnkBiliDown.app`（首次需右键 → 打开） |
+            | macOS Intel | `nnkBiliDown-macOS-x64.zip` | 同上 |
+            | Linux x64 | `nnkBiliDown-Linux-x64.tar.gz` | `tar -xzf` 后运行 `./nnkBiliDown` |
+
+            > macOS 版本未做代码签名与公证，首次打开请**右键 → 打开**，
+            > 或执行 `xattr -dr com.apple.quarantine nnkBiliDown.app`。
+            >
+            > Linux 版本需要 WebKit2GTK（多数桌面发行版已自带）：
+            > `sudo apt install python3-gi gir1.2-webkit2-4.1`

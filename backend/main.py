@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import platform
-import shutil
 import subprocess
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -23,6 +23,14 @@ from .config import ConfigManager, HistoryStore, SettingsValidationError
 from .downloader import DownloadManager
 from .models import CookieTestRequest, ParseRequest, SettingsUpdateRequest, TaskCreateRequest
 from .qr_login import QRLoginManager
+from .runtime import (
+    ensure_ffmpeg_on_path,
+    ffmpeg_exe,
+    ffprobe_exe,
+    frontend_dist,
+    IS_FROZEN,
+    resource_root,
+)
 
 logger = logging.getLogger("nnkbilidown")
 logging.basicConfig(
@@ -36,7 +44,9 @@ downloader = DownloadManager(config, history)
 qr_manager = QRLoginManager()
 ws_sockets: set[WebSocket] = set()
 
-FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+FRONTEND_DIST = frontend_dist()
+# 打包客户端内置 ffmpeg；把它的目录放进 PATH，让 yt-dlp 等子进程也能找到
+BUNDLED_FFMPEG_DIR = ensure_ffmpeg_on_path()
 
 
 @asynccontextmanager
@@ -44,9 +54,11 @@ async def lifespan(app: FastAPI):
     loop = asyncio.get_running_loop()
     downloader.attach_ws(loop, ws_sockets)
     logger.info("数据目录: %s", config.data_dir)
+    logger.info("资源目录: %s%s", resource_root(), "（打包模式）" if IS_FROZEN else "（源码模式）")
     ff = ffmpeg_status()
     if ff["ok"]:
         logger.info("ffmpeg: %s", ff["version"])
+        logger.info("ffmpeg 路径: %s（%s）", ff["path"], ff["source"])
     else:
         logger.warning("未检测到 ffmpeg，下载高画质/合并音视频将不可用")
     yield
@@ -55,20 +67,53 @@ async def lifespan(app: FastAPI):
 
 
 def ffmpeg_status() -> dict[str, Any]:
-    path = shutil.which("ffmpeg")
+    """检测 ffmpeg，返回路径、版本与来源（内置 / 环境变量 / 系统 PATH）。"""
+    path = ffmpeg_exe()
     if not path:
         hint = {
-            "Windows": "winget install Gyan.FFmpeg  或  choco install ffmpeg",
-            "Darwin": "brew install ffmpeg",
-            "Linux": "sudo apt install ffmpeg",
+            "Windows": "客户端已内置 ffmpeg；若仍提示缺失，请重新下载完整安装包",
+            "Darwin": "客户端已内置 ffmpeg；若仍提示缺失，请重新下载完整安装包",
+            "Linux": "客户端已内置 ffmpeg；若仍提示缺失，请重新下载完整安装包",
         }.get(platform.system(), "请从 https://ffmpeg.org 下载并加入 PATH")
-        return {"ok": False, "path": None, "version": None, "hint": hint}
+        return {"ok": False, "path": None, "version": None, "source": None, "hint": hint}
     try:
-        proc = subprocess.run([path, "-version"], capture_output=True, text=True, timeout=10, check=False)
-        first = proc.stdout.splitlines()[0] if proc.stdout else "ffmpeg"
+        # ffmpeg 的版本横幅写在 stderr，必须合并两个流才能拿到版本号
+        proc = subprocess.run(
+            [path, "-version"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+            stdin=subprocess.DEVNULL,
+        )
+        output = f"{proc.stdout or ''}\n{proc.stderr or ''}"
+        version = None
+        for line in output.splitlines():
+            line = line.strip()
+            if line.lower().startswith(("ffmpeg version", "ffprobe version")):
+                version = line
+                break
+        if version is None:
+            for line in output.splitlines():
+                if line.strip():
+                    version = line.strip()
+                    break
+        first = version or "ffmpeg（无法读取版本号）"
     except Exception:
-        first = "ffmpeg"
-    return {"ok": True, "path": path, "version": first}
+        first = "ffmpeg（无法读取版本号）"
+    if BUNDLED_FFMPEG_DIR and str(Path(path).parent) == BUNDLED_FFMPEG_DIR:
+        source = "bundled"
+    elif os.environ.get("NNKBILIDOWN_FFMPEG"):
+        source = "env"
+    else:
+        source = "system"
+    return {
+        "ok": True,
+        "path": path,
+        "version": first,
+        "source": source,
+        "ffprobe": ffprobe_exe(),
+    }
 
 
 app = FastAPI(

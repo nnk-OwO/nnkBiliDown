@@ -28,6 +28,7 @@ from .bilibili import (
     cookie_to_netscape,
 )
 from .config import ConfigManager, HistoryStore, now_iso
+from .runtime import ffmpeg_dir, ffmpeg_exe
 
 try:
     from yt_dlp.extractor.bilibili import BiliBiliIE
@@ -97,7 +98,9 @@ def _friendly_error(exc: Exception) -> str:
     if "412" in text or "Precondition Failed" in text:
         return "B 站风控校验失败（412）。请稍后重试，或在浏览器中打开一次该视频后再试。"
     if "ffmpeg" in text.lower() or "ffprobe" in text.lower():
-        return "未找到 ffmpeg 或合并失败。请安装 ffmpeg 并加入 PATH 后重试。"
+        if ffmpeg_exe():
+            return "音视频合并失败（ffmpeg 已就绪）。请重试，或改用 MP4 + AVC 输出。"
+        return "未找到 ffmpeg 或合并失败。客户端已内置 ffmpeg，请确认安装包完整后重试。"
     if "requested format is not available" in text.lower() or "requested format" in text.lower():
         return "所选清晰度/编码不可用，请返回重新选择其它清晰度。"
     if "cookie" in text.lower() or "login" in text.lower() or "会员" in text:
@@ -632,6 +635,9 @@ class DownloadManager:
         }
         if cookie_file:
             opts["cookiefile"] = str(cookie_file)
+        ff_dir = ffmpeg_dir()
+        if ff_dir:
+            opts["ffmpeg_location"] = ff_dir
         proxy = str(settings.get("proxy") or "").strip()
         if proxy:
             opts["proxy"] = proxy
