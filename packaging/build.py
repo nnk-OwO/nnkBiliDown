@@ -80,13 +80,35 @@ def log(msg: str) -> None:
     print(f"\n=== {msg}", flush=True)
 
 
-def run(cmd: list[str], cwd: Path | None = None, check: bool = True) -> int:
+def run(cmd: list[str], cwd: Path | None = None, check: bool = True, echo: bool = True) -> int:
+    """执行外部命令。
+
+    默认把子进程输出直接透传到控制台（npm / PyInstaller 的进度很有用）。
+    一旦命令失败，会**额外**把捕获到的输出重放一遍，避免 CI 上只剩一句
+    「exit code 1」而无从判断——这正是之前排查 macOS 失败时最大的障碍。
+    """
     log("执行：" + " ".join(str(c) for c in cmd))
     # 子进程同样强制 UTF-8，避免 Windows 控制台 GBK 编码下中文输出乱码/报错
     env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
-    proc = subprocess.run(cmd, cwd=str(cwd) if cwd else None, check=False, env=env)
-    if check and proc.returncode != 0:
-        raise SystemExit(f"[失败] 命令退出码 {proc.returncode}：{' '.join(str(c) for c in cmd)}")
+
+    proc = subprocess.run(
+        cmd,
+        cwd=str(cwd) if cwd else None,
+        check=False,
+        env=env,
+        stdout=None if echo else subprocess.PIPE,
+        stderr=None if echo else subprocess.STDOUT,
+        text=True,
+    )
+    if proc.returncode != 0:
+        if not echo and proc.stdout:
+            print("----- 命令输出 -----")
+            print(proc.stdout[-8000:])
+            print("----- 输出结束 -----")
+        if check:
+            raise SystemExit(
+                f"[失败] 命令退出码 {proc.returncode}：{' '.join(str(c) for c in cmd)}"
+            )
     return proc.returncode
 
 
@@ -508,7 +530,7 @@ def step_archive() -> None:
         target = DIST / f"{APP_NAME}-macOS-{arch}.zip"
         # ditto 能保留 .app 内的符号链接、可执行权限与资源分叉（未签名分发必须）
         if shutil.which("ditto"):
-            run(["ditto", "-c", "-k", "--sequesterRsrc", str(src), str(target)])
+            run(["ditto", "-c", "-k", "--sequesterRsrc", str(src), str(target)], echo=False)
             print(f"[完成] {target} ({target.stat().st_size / 1024 / 1024:.1f} MB)")
         else:
             _zip_dir(src, target)

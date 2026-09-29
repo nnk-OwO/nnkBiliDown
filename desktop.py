@@ -114,10 +114,30 @@ def setup_logging(verbose: bool = True) -> logging.Logger:
     return logger
 
 
+def _flush_streams() -> None:
+    """os._exit 不会刷新缓冲，退出前手动 flush，否则日志会丢。
+
+    打包产物的冒烟测试是读管道拿输出的，不刷新就只剩一个退出码，
+    排查时等于没有信息。
+    """
+    for name in ("stdout", "stderr"):
+        stream = getattr(sys, name, None)
+        try:
+            if stream is not None:
+                stream.flush()
+        except Exception:
+            pass
+    try:
+        logging.shutdown()
+    except Exception:
+        pass
+
+
 def _excepthook(exc_type, exc_value, exc_tb) -> None:
     logging.getLogger("nnkbilidown").critical(
         "未捕获异常", exc_info=(exc_type, exc_value, exc_tb)
     )
+    _flush_streams()
 
 
 # ---------------------------------------------------------------------------
@@ -538,7 +558,7 @@ def main(argv: list[str] | None = None) -> int:
             pass
         logger.info("nnkBiliDown 已退出")
         # 下载线程池为 daemon 线程，交给 OS 回收；避免解释器在关闭阶段卡住
-        logging.shutdown()
+        _flush_streams()
         os._exit(0)
 
 

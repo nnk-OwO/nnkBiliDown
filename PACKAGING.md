@@ -209,6 +209,34 @@ PYWEBVIEW_GUI=gtk          # Linux 下强制 pywebview 后端
 
 ## 7. 排障
 
+### 构建"成功"但步骤红叉：`exit code 141`
+
+如果你的 workflow 里出现这种怪现象——产物明明已经生成，某一步却失败——先看退出码：
+
+- **141 = 128 + 13（SIGPIPE）**，典型来源是 `某个命令 | head -N`：
+  `head` 读满 N 行就关闭管道，上游命令仍在写，收到 SIGPIPE 而死；
+  GitHub Actions 的 bash **默认开启 `pipefail`**，于是整条管道被判为失败。
+
+历史上「列出产物」步骤就踩了这个坑：
+
+```bash
+# ✗ 不要这样写
+ls -lhR dist/ | head -60
+
+# ✓ 结果落盘后再截断，或干脆不用管道
+find dist -maxdepth 2 > /tmp/tree.txt 2>/dev/null || true
+head -40 /tmp/tree.txt
+```
+
+另外 **`find -printf` 是 GNU 专有选项，macOS 的 BSD `find` 不支持**，
+用它会导致 macOS 上静默无输出（诊断失效），也不要用。
+
+本地验证 workflow 里的 shell 片段：
+
+```bash
+bash packaging/test_workflow_ls.sh
+```
+
 ### 打包失败：`Process completed with exit code 1`，日志几乎是空的
 
 Windows 上的经典坑：**控制台编码**。GitHub 的 Windows runner 默认是 cp1252 控制台，

@@ -106,9 +106,23 @@ jobs:
       - name: 打包客户端
         run: python packaging/build.py --build-frontend --ci
 
+      # 注意：不要写成 `ls -lhR dist/ | head -60`。
+      # head 读满即关闭管道，ls 收到 SIGPIPE 返回 141，bash 默认 pipefail
+      # 会把整个步骤判为失败（这就是之前"列出产物"变红的原因）。
+      # 另外 find -printf 是 GNU 专有选项，macOS 的 BSD find 不支持，别用。
       - name: 列出产物
         shell: bash
-        run: ls -lhR dist/ | head -60
+        run: |
+          echo "--- dist 顶层 ---"
+          ls -lh dist/ 2>/dev/null || echo "(dist 不存在)"
+          echo "--- 归档文件大小 ---"
+          found=0
+          for f in dist/*.zip dist/*.tar.gz; do
+            [ -f "$f" ] || continue
+            found=1
+            printf '  %10s 字节  %s\n' "$(wc -c < "$f" | tr -d ' ')" "$f"
+          done
+          [ "$found" -eq 1 ] || echo "(未找到归档文件)"
 
       # 构建失败时把关键诊断信息打出来，避免只看到一句 exit code 1
       - name: 失败诊断
@@ -118,13 +132,14 @@ jobs:
           echo "===== python / pip ====="
           python -V || true
           python -m pip -V || true
-          python -m pip config list || true
           echo "===== 内置 ffmpeg ====="
-          ls -lh tools/ffmpeg || true
+          ls -lh tools/ffmpeg 2>/dev/null || echo "(无 tools/ffmpeg)"
           echo "===== 前端产物 ====="
-          ls -lh frontend/dist || true
-          echo "===== dist（若已生成）====="
-          ls -lhR dist/ 2>/dev/null | head -60 || echo "dist 不存在"
+          ls -lh frontend/dist 2>/dev/null || echo "(无 frontend/dist)"
+          echo "===== dist 结构（二层）====="
+          # 先把结果落盘再 head，避免 find 被 SIGPIPE 打断
+          find dist -maxdepth 2 > /tmp/nnk_tree.txt 2>/dev/null || true
+          head -40 /tmp/nnk_tree.txt 2>/dev/null || echo "(dist 不存在)"
           echo "===== PyInstaller warn 文件 ====="
           find build -name 'warn-*.txt' -exec sh -c 'echo "--- {}"; tail -40 "{}"' \; 2>/dev/null || true
 

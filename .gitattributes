@@ -12,3 +12,13 @@
 *.png binary
 *.jpg binary
 *.jpeg binary
+
+# CI 配置与打包脚本同样强制 LF：
+# - workflow 由 Linux 上的 Actions 解析
+# - .spec / .txt 会被 PyInstaller 与 bash 读取
+# 工作区（Windows，core.autocrlf=true）如果被转成 CRLF，容易在 CI 上出怪问题
+*.yml text eol=lf
+*.yaml text eol=lf
+*.spec text eol=lf
+*.txt text eol=lf
+*.toml text eol=lf
