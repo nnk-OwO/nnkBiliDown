@@ -8,6 +8,8 @@ macOS 的 .icns 需要 macOS 自带工具转换，见 packaging/build.py 中的�
 """
 from __future__ import annotations
 
+import os
+import sys
 from pathlib import Path
 
 from PIL import Image, ImageDraw
@@ -15,6 +17,16 @@ from PIL import Image, ImageDraw
 ROOT = Path(__file__).resolve().parent.parent
 ASSETS = ROOT / "assets"
 SIZE = 1024
+
+# Windows cp1252 控制台下打印中文会抛 UnicodeEncodeError（退出码 1 且无日志）
+os.environ.setdefault("PYTHONUTF8", "1")
+for _name in ("stdout", "stderr"):
+    _stream = getattr(sys, _name, None)
+    if _stream is not None:
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError, OSError):
+            pass
 
 # B 站风格的粉色，但整体保持中性，避免与官方标识混淆
 BG_TOP = (255, 122, 158)

@@ -39,6 +39,43 @@ IS_WINDOWS = sys.platform.startswith("win")
 IS_MACOS = sys.platform == "darwin"
 
 
+def force_utf8_output() -> None:
+    """确保中文日志不会因控制台编码而崩溃。
+
+    Windows CI（GitHub runner / cmd.exe）默认是 cp1252 控制台，此时
+    ``print("=== 检查环境")`` 会直接抛 UnicodeEncodeError 并让脚本以退出码 1
+    结束——表现为「Process completed with exit code 1」且几乎没有任何日志。
+    这里在输出任何中文之前把标准流切到 UTF-8；无法 reconfigure 时退化为
+    把不可编码字符替换掉，保证脚本能跑完。
+    """
+    os.environ.setdefault("PYTHONUTF8", "1")
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        if stream is None:
+            continue
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+            continue
+        except (AttributeError, ValueError, OSError):
+            pass
+        try:
+            buffer = getattr(stream, "buffer", None)
+            if buffer is not None:
+                import io
+
+                setattr(
+                    sys,
+                    stream_name,
+                    io.TextIOWrapper(buffer, encoding="utf-8", errors="replace", line_buffering=True),
+                )
+        except Exception:
+            # 最后一层保险：出问题时不要让构建立刻失败
+            pass
+
+
+force_utf8_output()
+
+
 def log(msg: str) -> None:
     print(f"\n=== {msg}", flush=True)
 
@@ -181,10 +218,43 @@ def step_ffmpeg(skip: bool) -> bool:
     return True
 
 
+def _rmtree_with_retry(path: Path, attempts: int = 6) -> None:
+    """删除目录，并对 Windows 文件占用做重试。
+
+    常见占用来源：上一次打包出来的客户端还在运行（exe 被锁）、
+    杀毒软件正在扫描刚生成的二进制。直接 rmtree 会抛
+    PermissionError(WinError 32) 并让整个构建以退出码 1 结束。
+    """
+    import gc
+    import time as _time
+
+    if not path.exists():
+        return
+    last_error: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        gc.collect()  # 释放可能仍持有句柄的对象
+        try:
+            shutil.rmtree(path)
+            return
+        except FileNotFoundError:
+            return
+        except (PermissionError, OSError) as exc:
+            last_error = exc
+            if attempt == attempts:
+                break
+            print(f"[提示] 目录被占用，重试清理 {attempt}/{attempts - 1}：{path}")
+            _time.sleep(1.5 * attempt)
+
+    raise SystemExit(
+        f"[失败] 无法清理 {path}（{last_error}）。\n"
+        "       通常是因为上一次打包出来的客户端仍在运行，或杀毒软件正在扫描。\n"
+        "       请结束 nnkBiliDown 进程（Windows 可在任务管理器结束 nnkBiliDown.exe）后重试。"
+    )
+
+
 def step_pyinstaller() -> Path:
     log("PyInstaller 打包")
-    if DIST.exists():
-        shutil.rmtree(DIST)
+    _rmtree_with_retry(DIST)
     run([
         sys.executable, "-m", "PyInstaller",
         "--noconfirm", "--clean",
@@ -195,46 +265,107 @@ def step_pyinstaller() -> Path:
     return DIST
 
 
-def step_verify(require_ffmpeg: bool) -> None:
-    log("校验产物")
+def _app_layout() -> tuple[Path, Path]:
+    """返回 (可执行文件, 递归搜索资源的根目录)。
+
+    PyInstaller 各平台的资源落点并不一致：
+    - Windows / Linux (onedir): <dist>/<NAME>/ 下是 exe + _internal/
+    - macOS (.app + BUNDLE):    Contents/MacOS/<NAME> 是可执行文件，
+                                Contents/Resources/ 放非代码文件，
+                                COLLECT 目录被整体挪到 Contents/Frameworks/<NAME>/，
+                                并从 Contents/MacOS/ 反向符号链接。
+      所以 macOS 上必须以 .app 为根递归找，不能硬编码某一层。
+    """
     if IS_MACOS:
         bundle = DIST / f"{APP_NAME}.app"
-        app_dir = bundle / "Contents" / "Resources" / APP_NAME
-        exe = bundle / "Contents" / "MacOS" / APP_NAME
-    else:
-        app_dir = DIST / APP_NAME
-        exe = app_dir / (f"{APP_NAME}.exe" if IS_WINDOWS else APP_NAME)
+        return bundle / "Contents" / "MacOS" / APP_NAME, bundle
+    app_dir = DIST / APP_NAME
+    return app_dir / (f"{APP_NAME}.exe" if IS_WINDOWS else APP_NAME), app_dir
+
+
+def _walk_files(root: Path, max_depth: int = 12):
+    """遍历产物里的真实文件，不跟随符号链接。
+
+    macOS 的 .app 会把 Contents/Resources 与 Contents/MacOS 互相做符号链接，
+    跟随链接会绕圈或重复，所以这里用 os.walk(followlinks=False)。
+    """
+    import os as _os
+
+    root = root.resolve()
+    for dirpath, dirnames, filenames in _os.walk(root, followlinks=False):
+        current = Path(dirpath)
+        try:
+            depth = len(current.relative_to(root).parts)
+        except ValueError:
+            continue
+        if depth >= max_depth:
+            dirnames[:] = []
+        else:
+            # 剪掉指向别处的符号链接目录，避免绕圈
+            dirnames[:] = [
+                d for d in dirnames if not (current / d).is_symlink()
+            ]
+        for name in filenames:
+            path = current / name
+            if not path.is_symlink():
+                yield path
+
+
+def _tree_dump(root: Path, limit: int = 60) -> str:
+    """列出产物内的相对路径，校验失败时打印，便于一次性定位真实布局。"""
+    if not root.exists():
+        return f"（目录不存在：{root}）"
+    lines: list[str] = []
+    total = 0
+    for path in sorted(_walk_files(root)):
+        total += 1
+        if len(lines) < limit:
+            try:
+                lines.append(f"         {path.relative_to(root)}")
+            except ValueError:
+                lines.append(f"         {path}")
+    if total > limit:
+        lines.append(f"         …（共 {total} 个文件，已截断）")
+    return "\n".join(lines) if lines else "（空目录）"
+
+
+def step_verify(require_ffmpeg: bool) -> None:
+    log("校验产物")
+    exe, search_root = _app_layout()
 
     if not exe.exists():
-        raise SystemExit(f"[失败] 未找到可执行文件：{exe}")
+        raise SystemExit(
+            f"[失败] 未找到可执行文件：{exe}\n"
+            f"       产物目录内容：\n{_tree_dump(DIST)}"
+        )
     print(f"[就绪] 可执行文件：{exe}")
+    if IS_MACOS:
+        print(f"       资源搜索根：{search_root}")
 
-    # PyInstaller 6 把 datas 放进 _internal/（osx 是 Resources/<name>/_internal），
-    # 旧版本则直接散在应用目录；两种布局都要能识别。
-    search_bases = [
-        app_dir,
-        app_dir / "_internal",
-        exe.parent,
-        exe.parent / "_internal",
-        app_dir.parent / "Resources" / APP_NAME / "_internal",
-    ]
     ffmpeg_name = "ffmpeg.exe" if IS_WINDOWS else "ffmpeg"
 
     def locate(rel: Path) -> Path | None:
-        for base in search_bases:
-            candidate = base / rel
-            if candidate.exists():
-                return candidate
+        """在产物树里按尾部路径匹配查找文件。"""
+        try:
+            for candidate in _walk_files(search_root):
+                if candidate.parts[-len(rel.parts):] == rel.parts:
+                    return candidate
+        except OSError:
+            return None
         return None
 
     required = {
         "前端 index.html": Path("frontend/dist/index.html"),
         "后端代码": Path("backend/main.py"),
     }
+    missing: list[str] = []
+    found_map: dict[str, Path] = {}
     for label, rel in required.items():
         found = locate(rel)
         if not found:
-            raise SystemExit(f"[失败] 产物缺少 {label}：{app_dir / rel}")
+            missing.append(f"{label}（{rel}）")
+            continue
+        found_map[label] = found
         print(f"  [OK]   {label}: {rel} ({found.stat().st_size / 1024:.0f} KB)")
 
     ffmpeg_path = locate(Path("tools/ffmpeg") / ffmpeg_name)
@@ -242,25 +373,31 @@ def step_verify(require_ffmpeg: bool) -> None:
         print(f"  [OK]   内置 ffmpeg: tools/ffmpeg/{ffmpeg_name} "
               f"({ffmpeg_path.stat().st_size / 1024 / 1024:.1f} MB)")
     elif require_ffmpeg:
-        raise SystemExit(
-            "[失败] 产物里没有内置 ffmpeg，但本次构建要求必须内置。\n"
-            "       请检查 packaging/fetch_ffmpeg.py 的输出。"
-        )
+        missing.append(f"内置 ffmpeg（tools/ffmpeg/{ffmpeg_name}）")
     else:
         print("  [警告] 未内置 ffmpeg（运行时需要系统 PATH 中存在）")
 
+    if missing:
+        raise SystemExit(
+            "[失败] 产物校验不通过，缺少：\n"
+            + "\n".join(f"       - {item}" for item in missing)
+            + f"\n       产物实际内容（{search_root}）：\n{_tree_dump(search_root)}"
+        )
+
     # 前端资源完整性：index.html 引用的 assets 必须都在
-    index = locate(Path("frontend/dist/index.html"))
-    if index:
-        import re
-        frontend_dir = index.parent
-        html = index.read_text(encoding="utf-8")
-        for asset in re.findall(r'(?:src|href)="([^"]+)"', html):
-            if asset.startswith(("http://", "https://", "data:", "#", "/")):
-                continue
-            if not (frontend_dir / asset.lstrip("./")).exists():
-                raise SystemExit(f"[失败] 前端产物缺少资源：{asset}")
-        print("  [OK]   前端静态资源引用完整")
+    index = found_map["前端 index.html"]
+    import re
+    frontend_dir = index.parent
+    html = index.read_text(encoding="utf-8")
+    for asset in re.findall(r'(?:src|href)="([^"]+)"', html):
+        if asset.startswith(("http://", "https://", "data:", "#", "/")):
+            continue
+        if not (frontend_dir / asset.lstrip("./")).exists():
+            raise SystemExit(
+                f"[失败] 前端产物缺少资源：{asset}\n"
+                f"       index.html 位于：{frontend_dir}"
+            )
+    print("  [OK]   前端静态资源引用完整")
 
 
 def step_smoke_test() -> None:

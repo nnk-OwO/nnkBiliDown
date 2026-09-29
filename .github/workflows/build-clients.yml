@@ -29,6 +29,13 @@ on:
 permissions:
   contents: write
 
+# 全局强制 UTF-8：
+# Windows runner 的控制台默认是 cp1252，Python 打印中文会抛 UnicodeEncodeError
+# 并以退出码 1 结束（日志几乎是空的）。脚本内部也各自做了兜底，这里是第二道保险。
+env:
+  PYTHONUTF8: "1"
+  PYTHONIOENCODING: "utf-8"
+
 jobs:
   build:
     name: ${{ matrix.label }}
@@ -53,15 +60,15 @@ jobs:
             artifact: nnkBiliDown-Linux-x64
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: requirements.txt
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: "20"
           cache: npm
@@ -90,13 +97,36 @@ jobs:
       - name: 检查内置 ffmpeg
         run: python packaging/fetch_ffmpeg.py --check
 
+      # 产物布局定位逻辑的自测：macOS .app 的资源位置与 Windows/Linux 不同，
+      # 这个脚本用合成目录树验证定位逻辑，避免再次出现"打包成功但校验报缺文件"
+      - name: 校验产物定位逻辑
+        run: python packaging/test_output_layout.py
+
       # macOS 的 .icns 由 build.py 用系统 sips/iconutil 自动生成
       - name: 打包客户端
         run: python packaging/build.py --build-frontend --ci
 
       - name: 列出产物
         shell: bash
-        run: ls -lh dist/
+        run: ls -lhR dist/ | head -60
+
+      # 构建失败时把关键诊断信息打出来，避免只看到一句 exit code 1
+      - name: 失败诊断
+        if: failure()
+        shell: bash
+        run: |
+          echo "===== python / pip ====="
+          python -V || true
+          python -m pip -V || true
+          python -m pip config list || true
+          echo "===== 内置 ffmpeg ====="
+          ls -lh tools/ffmpeg || true
+          echo "===== 前端产物 ====="
+          ls -lh frontend/dist || true
+          echo "===== dist（若已生成）====="
+          ls -lhR dist/ 2>/dev/null | head -60 || echo "dist 不存在"
+          echo "===== PyInstaller warn 文件 ====="
+          find build -name 'warn-*.txt' -exec sh -c 'echo "--- {}"; tail -40 "{}"' \; 2>/dev/null || true
 
       - uses: actions/upload-artifact@v4
         with:

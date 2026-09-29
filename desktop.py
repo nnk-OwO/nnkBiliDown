@@ -61,11 +61,17 @@ class _NullStream:
 
 
 def _secure_streams() -> None:
+    # 中文日志 + cp1252 控制台会抛 UnicodeEncodeError，这里先把编码切到 UTF-8
+    os.environ.setdefault("PYTHONUTF8", "1")
     for name in ("stdout", "stderr"):
         stream = getattr(sys, name, None)
         if stream is None:
             setattr(sys, name, _NullStream())
             continue
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError, OSError):
+            pass
         try:
             stream.write("")
             stream.flush()

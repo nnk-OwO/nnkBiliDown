@@ -123,11 +123,35 @@ nnkBiliDown/
 ```text
 nnkBiliDown.app/
 └── Contents/
-    ├── MacOS/nnkBiliDown        # 可执行文件
-    └── Resources/
-        ├── frontend/dist/
-        └── tools/ffmpeg/
+    ├── MacOS/
+    │   ├── nnkBiliDown              # 可执行文件
+    │   ├── frontend -> …            # 交叉符号链接
+    │   └── …
+    ├── Frameworks/nnkBiliDown/      # COLLECT 目录被整体挪到这里
+    │   └── _internal/               # 真正的资源所在
+    │       ├── frontend/dist/
+    │       ├── backend/
+    │       └── tools/ffmpeg/
+    └── Resources/                   # 非代码文件（与 MacOS 互相交叉链接）
+        ├── frontend -> …
+        ├── backend -> …
+        └── tools -> …
 ```
+
+> ⚠️ macOS 的资源位置和 Windows/Linux 完全不同：`.app` 会把 `COLLECT` 目录挪到
+> `Contents/Frameworks/<NAME>/`，再通过 `Contents/Resources` 与 `Contents/MacOS`
+> 互相做符号链接。所以 `sys._MEIPASS` 在 macOS 上指向
+> `Contents/Frameworks/nnkBiliDown`。
+>
+> 因此**不要在脚本里硬编码某一层路径**。`build.py` 的产物校验用「以 `.app` 为根
+> 遍历 + 按尾部路径匹配」的方式定位（见 `_app_layout()` / `_walk_files()`），
+> 并且遍历时不跟随符号链接，避免 Resources ↔ MacOS 的环路。
+>
+> 想验证这套逻辑，可随时运行（任何平台都能跑，覆盖四种布局 + 负面用例）：
+> ```bash
+> python packaging/test_output_layout.py
+> ```
+> CI 里也会在打包前执行它。
 
 ---
 
@@ -184,6 +208,45 @@ PYWEBVIEW_GUI=gtk          # Linux 下强制 pywebview 后端
 ---
 
 ## 7. 排障
+
+### 打包失败：`Process completed with exit code 1`，日志几乎是空的
+
+Windows 上的经典坑：**控制台编码**。GitHub 的 Windows runner 默认是 cp1252 控制台，
+脚本里的中文（`print("=== 检查环境")`）会直接抛 `UnicodeEncodeError` 并以退出码 1 结束，
+看起来就像"什么都没干就失败了"。
+
+已做三重防护，如果你改动脚本请保留：
+
+1. workflow 顶层设 `PYTHONUTF8=1` / `PYTHONIOENCODING=utf-8`
+2. 各脚本入口调用 `force_utf8_output()`，把标准流切到 UTF-8
+3. `PYTHONIOENCODING` 缺失时仍能通过 `errors="replace"` 兜底
+
+本地复现方式：
+
+```powershell
+$env:PYTHONIOENCODING = "cp1252"
+$env:PYTHONUTF8 = "0"
+python packaging/build.py --help
+```
+
+### 打包失败：`[失败] 产物缺少 …`
+
+校验失败时会打印**产物实际内容清单**，直接照清单判断即可。常见原因：
+
+- macOS：资源在 `Contents/Frameworks/<NAME>/_internal/`，不要在脚本里硬编码路径
+- 前端未构建：`frontend/dist/index.html` 不存在
+- ffmpeg 未内置：`--skip-ffmpeg` 或下载失败
+
+先跑一次布局自测，快速排除定位逻辑问题：
+
+```bash
+python packaging/test_output_layout.py
+```
+
+### 打包失败：`无法清理 dist（WinError 32）`
+
+上一次打包出来的客户端还在运行，`nnkBiliDown.exe` 锁住了产物目录。
+结束该进程后重试即可；脚本内置了带重试的清理与明确提示。
 
 ### 打包失败：`Permission denied` / `WinError 5`
 

@@ -38,6 +38,26 @@ IS_WINDOWS = sys.platform.startswith("win")
 IS_MACOS = sys.platform == "darwin"
 USER_AGENT = "nnkBiliDown-packaging/1.0"
 
+
+def force_utf8_output() -> None:
+    """避免 Windows cp1252 控制台下打印中文时抛 UnicodeEncodeError。
+
+    该异常会让脚本以退出码 1 结束，且日志几乎为空（CI 上表现为
+    「Process completed with exit code 1」）。
+    """
+    os.environ.setdefault("PYTHONUTF8", "1")
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        if stream is None:
+            continue
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError, OSError):
+            pass
+
+
+force_utf8_output()
+
 BTBN_API = "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/latest"
 
 LICENSE_NOTE = """本目录下的 ffmpeg / ffprobe 为第三方预编译二进制，随 nnkBiliDown 客户端一同分发。
